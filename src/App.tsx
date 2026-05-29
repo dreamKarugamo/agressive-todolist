@@ -1,296 +1,442 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import './App.css';
 
-interface Todolist {
+// --- 型定義 ---
+export type Priority = "low" | "medium" | "high";
+
+export interface TodoItem {
     id: string;
     title: string;
     isCompleted: boolean;
+    dueDate: string;
+    priority: Priority;
+    tags: string[];
 }
 
+export interface FilterState {
+    searchQuery: string;
+    showOnlyIncomplete: boolean;
+    selectedTag: string | "all";
+    sortBy: "dueDateAsc" | "dueDateDesc" | "priorityHigh" | "none";
+}
+
+// --- 定数 ---
+const INITIAL_TODOS: TodoItem[] = [
+    {
+        id: "1",
+        title: "ToDoアプリを作る",
+        isCompleted: false,
+        dueDate: "2026-05-22",
+        priority: "high",
+        tags: ["勉強", "React"],
+    },
+    {
+        id: "2",
+        title: "部屋の掃除",
+        isCompleted: true,
+        dueDate: "2026-05-20",
+        priority: "low",
+        tags: ["日常"],
+    },
+    {
+        id: "3",
+        title: "食材の買い出し",
+        isCompleted: false,
+        dueDate: "2026-05-25",
+        priority: "medium",
+        tags: ["日常", "買い物"],
+    },
+];
+
+const PRIORITY_SCORE: Record<Priority, number> = { high: 3, medium: 2, low: 1 };
+
+const PRIORITY_LABEL: Record<Priority, string> = {
+    high: "HIGH (至高)",
+    medium: "MEDIUM (普通)",
+    low: "LOW (低俗)",
+};
+
+const PRIORITY_BADGE_CLASS: Record<Priority, string> = {
+    high: "badge-high",
+    medium: "badge-medium",
+    low: "badge-low",
+};
+
+// --- ユーティリティ ---
+function getToday(): string {
+    return new Date().toISOString().split("T")[0];
+}
+
+function parseTags(input: string): string[] {
+    return input
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+}
+
+// --- サブコンポーネント ---
+function TodoMetaBadges({ todo }: { todo: TodoItem }) {
+    return (
+        <div className="todo-meta">
+            <span className="badge badge-date">{todo.dueDate || "—"}</span>
+            <span className={`badge ${PRIORITY_BADGE_CLASS[todo.priority]}`}>
+                P:{todo.priority.toUpperCase()}
+            </span>
+            {todo.tags.map((tag) => (
+                <span key={tag} className="badge badge-tag">
+                    #{tag}
+                </span>
+            ))}
+        </div>
+    );
+}
+
+function TodoListItem({
+    todo,
+    onToggle,
+    onDelete,
+}: {
+    todo: TodoItem;
+    onToggle: (id: string) => void;
+    onDelete: (id: string) => void;
+}) {
+    return (
+        <li className={`todo-item${todo.isCompleted ? " done" : ""}`}>
+            <div className="todo-top">
+                <div className="todo-left">
+                    <input
+                        type="checkbox"
+                        checked={todo.isCompleted}
+                        onChange={() => onToggle(todo.id)}
+                    />
+                    <span className="todo-title">
+                        {todo.title}
+                        {todo.isCompleted && (
+                            <span className="done-badge"> ✓ DONE</span>
+                        )}
+                    </span>
+                </div>
+                <button className="del-btn" onClick={() => onDelete(todo.id)}>
+                    DEL
+                </button>
+            </div>
+            <TodoMetaBadges todo={todo} />
+        </li>
+    );
+}
+
+function EmptyState({
+    todos,
+    hasStarted,
+}: {
+    todos: TodoItem[];
+    hasStarted: boolean;
+}) {
+    if (todos.length > 0) return null;
+    const message = hasStarted
+        ? "現在、タスクは皆無だ。貴殿の従順さに感服する。"
+        : "システム待機中 — 最初の命令を入力せよ。";
+    return <div className="empty-state">{message}</div>;
+}
+
+// --- メインコンポーネント ---
 function App() {
+    // 入力用ステート
     const [userInput, setUserInput] = useState("");
-    const [todos, setTodos] = useState<Todolist[]>(() => {
-        const savedTodos = localStorage.getItem("todos");
-        return savedTodos ? JSON.parse(savedTodos) : [];
+    const [inputDueDate, setInputDueDate] = useState("");
+    const [inputPriority, setInputPriority] = useState<Priority>("medium");
+    const [inputTags, setInputTags] = useState("");
+
+    // フィルター・ソート用ステート
+    const [filter, setFilter] = useState<FilterState>({
+        searchQuery: "",
+        showOnlyIncomplete: false,
+        selectedTag: "all",
+        sortBy: "none",
     });
 
-    // 過去に一度でもタスクが存在したかどうかのフラグ
+    // タスク本体のステート（localStorage から復元）
+    const [todos, setTodos] = useState<TodoItem[]>(() => {
+        try {
+            const saved = localStorage.getItem("myTodos");
+            return saved ? JSON.parse(saved) : INITIAL_TODOS;
+        } catch {
+            return INITIAL_TODOS;
+        }
+    });
+
     const [hasStarted, setHasStarted] = useState<boolean>(() => {
-        const savedFlag = localStorage.getItem("hasStarted");
-        return savedFlag ? JSON.parse(savedFlag) : false;
+        try {
+            const saved = localStorage.getItem("hasStarted");
+            return saved ? JSON.parse(saved) : false;
+        } catch {
+            return false;
+        }
     });
 
+    // localStorage への同期
     useEffect(() => {
-        localStorage.setItem("todos", JSON.stringify(todos));
+        localStorage.setItem("myTodos", JSON.stringify(todos));
     }, [todos]);
-
-    // 💡 フラグが変化したときも localStorage に保存する
     useEffect(() => {
         localStorage.setItem("hasStarted", JSON.stringify(hasStarted));
     }, [hasStarted]);
 
-    const addToList = () => {
+    // 全タグの抽出
+    const allTags = useMemo(() => {
+        const set = new Set<string>();
+        todos.forEach((t) => t.tags.forEach((tag) => set.add(tag)));
+        return Array.from(set);
+    }, [todos]);
+
+    // フィルタリング＆ソート
+    const filteredAndSortedTodos = useMemo(() => {
+        let result = [...todos];
+        if (filter.searchQuery.trim()) {
+            result = result.filter((t) =>
+                t.title
+                    .toLowerCase()
+                    .includes(filter.searchQuery.toLowerCase()),
+            );
+        }
+        if (filter.showOnlyIncomplete)
+            result = result.filter((t) => !t.isCompleted);
+        if (filter.selectedTag !== "all")
+            result = result.filter((t) => t.tags.includes(filter.selectedTag));
+        if (filter.sortBy === "dueDateAsc") {
+            result.sort((a, b) =>
+                !a.dueDate
+                    ? 1
+                    : !b.dueDate
+                      ? -1
+                      : new Date(a.dueDate).getTime() -
+                        new Date(b.dueDate).getTime(),
+            );
+        } else if (filter.sortBy === "dueDateDesc") {
+            result.sort((a, b) =>
+                !a.dueDate
+                    ? 1
+                    : !b.dueDate
+                      ? -1
+                      : new Date(b.dueDate).getTime() -
+                        new Date(a.dueDate).getTime(),
+            );
+        } else if (filter.sortBy === "priorityHigh") {
+            result.sort(
+                (a, b) =>
+                    PRIORITY_SCORE[b.priority] - PRIORITY_SCORE[a.priority],
+            );
+        }
+        return result;
+    }, [todos, filter]);
+
+    // --- アクション ---
+    const addTodo = () => {
         if (!userInput.trim()) return;
-
-        const newTodo: Todolist = {
+        const newTodo: TodoItem = {
             id: crypto.randomUUID(),
-            title: userInput,
+            title: userInput.trim(),
             isCompleted: false,
+            dueDate: inputDueDate || getToday(),
+            priority: inputPriority,
+            tags: parseTags(inputTags),
         };
-
-        setTodos([...todos, newTodo]);
+        setTodos((prev) => [...prev, newTodo]);
         setUserInput("");
-
+        setInputDueDate("");
+        setInputPriority("medium");
+        setInputTags("");
         setHasStarted(true);
     };
 
-    const deleteTodo = (id: string) => {
-        setTodos(todos.filter((todo) => todo.id !== id));
-    };
-
-    const toggleComplete = (id: string) => {
-        setTodos(
-            todos.map((todo) =>
-                todo.id === id
-                    ? { ...todo, isCompleted: !todo.isCompleted }
-                    : todo,
+    const deleteTodo = (id: string) =>
+        setTodos((prev) => prev.filter((t) => t.id !== id));
+    const toggleComplete = (id: string) =>
+        setTodos((prev) =>
+            prev.map((t) =>
+                t.id === id ? { ...t, isCompleted: !t.isCompleted } : t,
             ),
         );
-    };
+    const clearAll = () => setTodos([]);
 
-    const clearAll = () => {
-        setTodos([]);
-    };
+    const updateFilter = (patch: Partial<FilterState>) =>
+        setFilter((prev) => ({ ...prev, ...patch }));
 
     return (
-        <div
-            style={{
-                backgroundColor: "#000000",
-                color: "#ffffff",
-                minHeight: "100vh",
-                padding: "40px 20px",
-                fontFamily: "'Courier New', Courier, monospace, sans-serif",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                boxSizing: "border-box",
-            }}
-        >
-            <div style={{ textAlign: "center", marginBottom: "40px" }}>
-                <h1
-                    style={{
-                        fontSize: "2.5rem",
-                        fontWeight: "900",
-                        color: "#00ffff",
-                        textShadow:
-                            "0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 40px #ff00ff",
-                        letterSpacing: "4px",
-                        margin: "0 0 10px 0",
-                        textTransform: "uppercase",
-                    }}
-                >
-                    ⚡️ ABSOLUTE TODO ⚡️
-                </h1>
-                <p
-                    style={{
-                        color: "#ff00ff",
-                        fontSize: "0.9rem",
-                        fontWeight: "bold",
-                        textShadow: "0 0 5px #ff00ff",
-                        letterSpacing: "2px",
-                    }}
-                >
-                    ⚠️ 警告:
-                    登録したタスクは、直ちに完遂せよ。遅延は敗北を意味する。
-                </p>
-            </div>
-
-            <div
-                style={{
-                    width: "100%",
-                    maxWidth: "500px",
-                    backgroundColor: "#0d0d0d",
-                    border: "3px solid #ff4500",
-                    borderRadius: "0px",
-                    padding: "24px",
-                    boxShadow: "0 0 20px #ff4500, inset 0 0 10px #ff4500",
-                }}
-            >
-                <div
-                    style={{
-                        display: "flex",
-                        gap: "12px",
-                        marginBottom: "24px",
-                    }}
-                >
-                    <input
-                        type="text"
-                        value={userInput}
-                        onChange={(e) => setUserInput(e.target.value)}
-                        placeholder="貴殿の義務を入力するのだ！"
-                        style={{
-                            flex: 1,
-                            padding: "12px",
-                            backgroundColor: "#1a1a1a",
-                            border: "2px solid #00ffff",
-                            color: "#ffff00",
-                            fontWeight: "bold",
-                            fontSize: "1rem",
-                            outline: "none",
-                            boxShadow: "0 0 8px #00ffff",
-                        }}
-                    />
-                    <button
-                        onClick={addToList}
-                        style={{
-                            padding: "12px 24px",
-                            backgroundColor: "#00ffff",
-                            color: "#000000",
-                            border: "none",
-                            fontWeight: "900",
-                            fontSize: "1rem",
-                            cursor: "pointer",
-                            boxShadow: "0 0 12px #00ffff",
-                            textTransform: "uppercase",
-                        }}
-                    >
-                        生成
-                    </button>
+        <>
+            <div className="app">
+                <div className="header">
+                    <h1>⚡ ABSOLUTE TODO ⚡</h1>
+                    <div className="subtitle">
+                        【警告】<br />
+                        登録したタスクは直ちに完遂せよ。<br />
+                        遅延は敗北を意味する。
+                    </div>
                 </div>
 
-                {todos.length > 0 && (
-                    <button
-                        onClick={clearAll}
-                        style={{
-                            width: "100%",
-                            marginBottom: "24px",
-                            padding: "10px",
-                            backgroundColor: "#ff0055",
-                            color: "#ffffff",
-                            border: "2px solid #ffffff",
-                            fontWeight: "bold",
-                            fontSize: "0.9rem",
-                            letterSpacing: "3px",
-                            cursor: "pointer",
-                            boxShadow: "0 0 15px #ff0055",
-                            textTransform: "uppercase",
-                        }}
-                    >
-                        💥 全タスク強制破棄（現実逃避） 💥
-                    </button>
-                )}
-
-                <ul style={{ padding: 0, margin: 0 }}>
-                    {todos.map((todo) => (
-                        <li
-                            key={todo.id}
-                            style={{
-                                listStyle: "none",
-                                marginBottom: "12px",
-                                backgroundColor: todo.isCompleted
-                                    ? "#051a05"
-                                    : "#1a0000",
-                                border: todo.isCompleted
-                                    ? "2px solid #00ff00"
-                                    : "2px solid #ff0000",
-                                boxShadow: todo.isCompleted
-                                    ? "0 0 10px #00ff00"
-                                    : "0 0 10px #ff0000",
-                                padding: "14px",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                            }}
-                        >
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: "12px",
-                                    flex: 1,
-                                }}
-                            >
-                                <input
-                                    type="checkbox"
-                                    checked={todo.isCompleted}
-                                    onChange={() => toggleComplete(todo.id)}
-                                    style={{
-                                        width: "20px",
-                                        height: "20px",
-                                        cursor: "pointer",
-                                        accentColor: "#00ff00",
-                                    }}
-                                />
-                                <span
-                                    style={{
-                                        fontSize: "1.1rem",
-                                        fontWeight: "bold",
-                                        color: todo.isCompleted
-                                            ? "#00ff00"
-                                            : "#ffffff",
-                                        textDecoration: todo.isCompleted
-                                            ? "line-through"
-                                            : "none",
-                                        textShadow: todo.isCompleted
-                                            ? "0 0 5px #00ff00"
-                                            : "none",
-                                        wordBreak: "break-all",
-                                    }}
-                                >
-                                    {todo.title}{" "}
-                                    {todo.isCompleted && "【完遂】"}
-                                </span>
-                            </div>
-
-                            <button
-                                onClick={() => deleteTodo(todo.id)}
-                                style={{
-                                    marginLeft: "12px",
-                                    padding: "6px 12px",
-                                    backgroundColor: "transparent",
-                                    color: "#ff4500",
-                                    border: "1px solid #ff4500",
-                                    fontWeight: "bold",
-                                    cursor: "pointer",
-                                    boxShadow: "0 0 5px #ff4500",
-                                }}
-                            >
-                                抹消
+                <div className="panel">
+                    {/* タスク追加 */}
+                    <div className="add-section">
+                        <div className="section-label">MISSION INPUT</div>
+                        <div className="main-input-row">
+                            <input
+                                className="task-input"
+                                type="text"
+                                value={userInput}
+                                onChange={(e) => setUserInput(e.target.value)}
+                                onKeyDown={(e) =>
+                                    e.key === "Enter" && addTodo()
+                                }
+                                placeholder="貴殿の義務を入力するのだ！"
+                            />
+                            <button className="add-btn" onClick={addTodo}>
+                                生成
                             </button>
-                        </li>
-                    ))}
-                </ul>
-
-                {/* タスクが空、かつ、一度でもタスクを入れたことがある場合のみ表示 */}
-                {todos.length === 0 && hasStarted && (
-                    <div
-                        style={{
-                            textAlign: "center",
-                            padding: "20px",
-                            color: "#ffff00",
-                            fontWeight: "bold",
-                            border: "1px dashed #ffff00",
-                            textShadow: "0 0 5px #ffff00",
-                        }}
-                    >
-                        現在、タスクは皆無だ。貴殿の従順さに感服する。
+                        </div>
+                        <div className="meta-row">
+                            <div className="meta-field">
+                                <div className="meta-label">期限</div>
+                                <input
+                                    className="ctrl"
+                                    type="date"
+                                    value={inputDueDate}
+                                    onChange={(e) =>
+                                        setInputDueDate(e.target.value)
+                                    }
+                                />
+                            </div>
+                            <div className="meta-field">
+                                <div className="meta-label">優先度</div>
+                                <select
+                                    className="ctrl"
+                                    value={inputPriority}
+                                    onChange={(e) =>
+                                        setInputPriority(
+                                            e.target.value as Priority,
+                                        )
+                                    }
+                                >
+                                    {(
+                                        ["high", "medium", "low"] as Priority[]
+                                    ).map((p) => (
+                                        <option key={p} value={p}>
+                                            {PRIORITY_LABEL[p]}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="meta-field wide">
+                                <div className="meta-label">
+                                    タグ (カンマ区切り)
+                                </div>
+                                <input
+                                    className="ctrl"
+                                    type="text"
+                                    value={inputTags}
+                                    onChange={(e) =>
+                                        setInputTags(e.target.value)
+                                    }
+                                    placeholder="例: 勉強, React"
+                                />
+                            </div>
+                        </div>
                     </div>
-                )}
 
-                {todos.length === 0 && !hasStarted && (
-                    <div
-                        style={{
-                            textAlign: "center",
-                            padding: "20px",
-                            color: "#888888",
-                            fontSize: "0.9rem",
-                            border: "1px dashed #333333",
-                        }}
-                    >
-                        システム待機中... 最初の命令を入力せよ。
+                    {/* フィルター・ソート */}
+                    <div className="filter-section">
+                        <div className="section-label">CONTROL PROTOCOL</div>
+                        <div className="filter-row">
+                            <input
+                                className="ctrl"
+                                type="text"
+                                placeholder="タスクを検索..."
+                                value={filter.searchQuery}
+                                onChange={(e) =>
+                                    updateFilter({
+                                        searchQuery: e.target.value,
+                                    })
+                                }
+                            />
+                            <select
+                                className="ctrl"
+                                value={filter.selectedTag}
+                                onChange={(e) =>
+                                    updateFilter({
+                                        selectedTag: e.target.value,
+                                    })
+                                }
+                            >
+                                <option value="all">すべてのタグ</option>
+                                {allTags.map((tag) => (
+                                    <option key={tag} value={tag}>
+                                        {tag}
+                                    </option>
+                                ))}
+                            </select>
+                            <select
+                                className="ctrl"
+                                value={filter.sortBy}
+                                onChange={(e) =>
+                                    updateFilter({
+                                        sortBy: e.target
+                                            .value as FilterState["sortBy"],
+                                    })
+                                }
+                            >
+                                <option value="none">並び替え: なし</option>
+                                <option value="dueDateAsc">期限が近い順</option>
+                                <option value="dueDateDesc">
+                                    期限が遠い順
+                                </option>
+                                <option value="priorityHigh">優先度: 高</option>
+                            </select>
+                        </div>
+                        <label className="checkbox-label">
+                            <input
+                                type="checkbox"
+                                checked={filter.showOnlyIncomplete}
+                                onChange={(e) =>
+                                    updateFilter({
+                                        showOnlyIncomplete: e.target.checked,
+                                    })
+                                }
+                            />
+                            未完のタスクのみを表示
+                        </label>
                     </div>
-                )}
+
+                    {/* 全削除ボタン */}
+                    {todos.length > 0 && (
+                        <button className="clear-btn" onClick={clearAll}>
+                            [ 全タスク破棄 — 現実逃避するのもよかろう ]
+                        </button>
+                    )}
+
+                    {/* タスクリスト */}
+                    <ul className="todo-list">
+                        {filteredAndSortedTodos.map((todo) => (
+                            <TodoListItem
+                                key={todo.id}
+                                todo={todo}
+                                onToggle={toggleComplete}
+                                onDelete={deleteTodo}
+                            />
+                        ))}
+                    </ul>
+
+                    {/* 検索結果なし */}
+                    {filteredAndSortedTodos.length === 0 &&
+                        todos.length > 0 && (
+                            <div className="empty-state">
+                                検索・抽出条件に合致するタスクは見当たらない。
+                            </div>
+                        )}
+
+                    {/* 空状態 */}
+                    <EmptyState todos={todos} hasStarted={hasStarted} />
+                </div>
             </div>
-        </div>
+        </>
     );
 }
 
